@@ -1,7 +1,8 @@
 import kagglehub
 import os
 
-def load_movie_dialogs(max_sequences=50000):
+
+def load_movie_dialogs(max_sequences=50000): 
     path = kagglehub.dataset_download("rajathmc/cornell-moviedialog-corpus")
     
     movie_lines_path = os.path.join(path, "movie_lines.txt")
@@ -17,7 +18,7 @@ def load_movie_dialogs(max_sequences=50000):
                 line_id, _, _, _, text = parts
                 lines[line_id] = text.lower()
     
-    # Lire les conversations
+    # Read conversations
     conversations = []
     with open(movie_conversations_path, 'r', encoding='iso-8859-1') as f:
         for line in f:

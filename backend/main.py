@@ -3,11 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import torch
 import torch.nn as nn
-import math
+from model import TransformerLanguageModel
 
 app = FastAPI()
 
-# Configure CORS
+# Configure CORS for local development (+ all origins)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://localhost:3001", "*"],
@@ -16,49 +16,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_seq_length=5000):
-        super().__init__()
-        position = torch.arange(max_seq_length).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_seq_length, d_model)
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer("pe", pe.unsqueeze(0))
-
-    def forward(self, x):
-        return x + self.pe[:, : x.size(1)]
-
-class TransformerLanguageModel(nn.Module):
-    def __init__(self, vocab_size, d_model=512, nhead=8, num_layers=6):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        self.pos_encoder = PositionalEncoding(d_model)
-        
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=d_model * 4,
-            dropout=0.2,
-            batch_first=True,
-            activation=nn.GELU()
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        
-        self.output_layer = nn.Linear(d_model, vocab_size)
-        self.d_model = d_model
-
-    def forward(self, src):
-        src = self.embedding(src) * math.sqrt(self.d_model)
-        src = self.pos_encoder(src)
-        output = self.transformer(src)
-        return self.output_layer(output)
-
 class GenerateRequest(BaseModel):
     prompt: str
     max_length: int = 50
     temperature: float = 0.7  
 
+# Loads model / vocs
 def load_model_and_vocab():
     try:
         checkpoint = torch.load("data_transformer.pth", map_location=torch.device('cpu'), weights_only=False)
@@ -99,7 +62,7 @@ def generate_text(model, start_text, max_length=50, temperature=0.9):
         return ""
         
     model.eval()
-    # Clean input text
+    # Clean input 
     cleaned_text = start_text.lower().replace('"', '').strip()
     words = [w for w in cleaned_text.split() if w.strip()]
     initial_prompt_words = set(words)
@@ -110,7 +73,7 @@ def generate_text(model, start_text, max_length=50, temperature=0.9):
     recent_words = set()  # Track recent words for local repetition
     banned_words = set()  # Words that shouldn't appear again
     
-    # Sentence control
+    # Sentence controls
     end_tokens = [".", "?", "!"]
     sentence_count = 0
     max_sentences = 2
@@ -118,7 +81,7 @@ def generate_text(model, start_text, max_length=50, temperature=0.9):
     max_words_per_sentence = 10
     current_sentence_words = len(words)
     
-    # Common words that should connect ideas
+    # Common words -> connect ideas
     connectors = {"and", "but", "because", "while", "though", "however", "when", "if", "as"}
     pronouns = {"he", "she", "they", "it", "we", "you", "i"}
     
@@ -133,7 +96,7 @@ def generate_text(model, start_text, max_length=50, temperature=0.9):
             output = model(input_seq)
             logits = output[0, -1, :] / temperature
             
-            # Sample from top-k
+            # Sample from top-k -> check only top words
             k = min(50, len(word_to_idx))
             top_k_probs, top_k_indices = torch.topk(logits, k)
             probs = torch.softmax(top_k_probs, dim=0)

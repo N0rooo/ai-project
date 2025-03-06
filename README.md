@@ -53,13 +53,13 @@ class TransformerLanguageModel(nn.Module):
 ## 🛠️ Tech Stack
 
 ### Backend
-- Python 3.8+
+- Python 3.12+
 - FastAPI
 - PyTorch
 - KaggleHub (for dataset)
 
 ### Frontend
-- Next.js 13 (App Router)
+- Next.js 15 (App Router)
 - TypeScript
 - TailwindCSS
 - Web Speech API
@@ -67,8 +67,8 @@ class TransformerLanguageModel(nn.Module):
 ## 📦 Installation
 
 ### Prerequisites
-- Python 3.8+
-- Node.js 16+
+- Python 3.12+
+- Node.js 20+
 - CUDA-capable GPU (recommended)
 - Git
 
