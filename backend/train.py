@@ -1,0 +1,175 @@
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+import math
+import json
+from sentence_transformers import SentenceTransformer
+from sklearn.neighbors import NearestNeighbors
+import numpy as np
+import pandas as pd
+
+from dataset import battles, deaths
+
+def load_got_data():
+    text = []
+    
+    for _, battle in battles.iterrows():
+        battle_text = f"In the {battle['name']}, {battle['attacker_1']} attacked {battle['defender_1']}. "
+        if pd.notna(battle['location']):
+            battle_text += f"The battle took place at {battle['location']}. "
+        if pd.notna(battle['attacker_outcome']):
+            battle_text += f"The outcome was {battle['attacker_outcome']}. "
+        text.append(battle_text.lower())
+    
+    # Add character deaths
+    for _, death in deaths.iterrows():
+        death_text = f"{death['Name']} died in {death['Death Year']} "
+        if pd.notna(death['Book of Death']):
+            death_text += f"in book {death['Book of Death']} "
+        if pd.notna(death['Death Chapter']):
+            death_text += f"during chapter {death['Death Chapter']} "
+        text.append(death_text.lower())
+    
+    return " ".join(text)
+
+# Charger et préparer les données
+text = load_got_data()
+words = text.split()
+vocab = sorted(list(set(words)))
+vocab.append("<UNK>")
+word_to_idx = {word: i for i, word in enumerate(vocab)}
+idx_to_word = {i: word for i, word in enumerate(vocab)}
+vocab_size = len(vocab)
+
+class GoTDataset(Dataset):
+    def __init__(self, words, sequence_length=32):
+        self.words = words
+        self.sequence_length = sequence_length
+        self.total_len = len(words) - sequence_length
+
+    def __len__(self):
+        return self.total_len
+
+    def __getitem__(self, idx):
+        chunk = self.words[idx : idx + self.sequence_length + 1]
+        x = torch.tensor([word_to_idx.get(w, word_to_idx["<UNK>"]) for w in chunk[:-1]], dtype=torch.long)
+        y = torch.tensor([word_to_idx.get(w, word_to_idx["<UNK>"]) for w in chunk[1:]], dtype=torch.long)
+        return x, y
+
+class TransformerLanguageModel(nn.Module):
+    def __init__(self, vocab_size, d_model=256, nhead=8, num_layers=4):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.pos_encoder = PositionalEncoding(d_model)
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=d_model * 4,
+            dropout=0.2,
+            batch_first=True,
+            activation=nn.GELU()
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        self.output_layer = nn.Linear(d_model, vocab_size)
+        self.d_model = d_model
+
+    def forward(self, src):
+        src = self.embedding(src) * math.sqrt(self.d_model)
+        src = self.pos_encoder(src)
+        output = self.transformer(src)
+        return self.output_layer(output)
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_seq_length=5000):
+        super().__init__()
+        position = torch.arange(max_seq_length).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_seq_length, d_model)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pe", pe.unsqueeze(0))
+
+    def forward(self, x):
+        return x + self.pe[:, : x.size(1)]
+
+def train_epoch(model, dataloader, criterion, optimizer, device):
+    model.train()
+    total_loss = 0
+    for batch_idx, (x, y) in enumerate(dataloader):
+        x, y = x.to(device), y.to(device)
+        optimizer.zero_grad()
+        output = model(x)
+        loss = criterion(output.reshape(-1, vocab_size), y.reshape(-1))
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+        total_loss += loss.item()
+
+        if (batch_idx + 1) % 100 == 0:
+            print(f"    Batch {batch_idx + 1}/{len(dataloader)}, Loss: {loss.item():.4f}")
+
+    return total_loss / len(dataloader)
+
+if __name__ == "__main__":
+    # Paramètres d'entraînement
+    d_model = 256
+    nhead = 8
+    num_layers = 4
+    batch_size = 128
+    num_epochs = 100
+    sequence_length = 32
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # Créer dataset et dataloader
+    dataset = GoTDataset(words, sequence_length)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    # Initialiser ou charger le modèle
+    model = TransformerLanguageModel(
+        vocab_size=vocab_size,
+        d_model=d_model,
+        nhead=nhead,
+        num_layers=num_layers
+    ).to(device)
+
+    # Essayer de charger un modèle existant
+    try:
+        model.load_state_dict(torch.load("got_transformer.pth"))
+        print("Loaded existing model successfully!")
+    except FileNotFoundError:
+        print("No existing model found, starting from scratch.")
+
+    # Optimizer et criterion
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.01)
+    criterion = nn.CrossEntropyLoss()
+
+    print(f"Starting training with {num_epochs} epochs")
+    print(f"Vocabulary size: {vocab_size} words")
+    print(f"Dataset size: {len(dataset)} sequences")
+    print(f"Batches per epoch: {len(dataloader)}")
+    print("=" * 50)
+
+    # Boucle d'entraînement
+    for epoch in range(num_epochs):
+        print(f"\nStarting epoch {epoch + 1}/{num_epochs}")
+        avg_loss = train_epoch(model, dataloader, criterion, optimizer, device)
+        print(f"Epoch {epoch + 1} completed, Average Loss: {avg_loss:.4f}")
+
+        # Sauvegarder le modèle après chaque époque
+        torch.save(model.state_dict(), "got_transformer.pth")
+        print("Model saved!")
+
+    # Sauvegarder le vocabulaire
+    print("\nSaving vocabulary...")
+    vocab_data = {
+        'word_to_idx': word_to_idx,
+        'idx_to_word': idx_to_word
+    }
+    with open('vocab.json', 'w') as f:
+        json.dump(vocab_data, f)
+
+    print("Training completed!")
