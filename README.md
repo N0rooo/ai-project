@@ -166,30 +166,3 @@ python train.py
 ```
 
 The model will be saved as `data_transformer.pth`
-
-## 📊 Project Structure
-
-```
-movie-dialog-generator/
-├── backend/
-│   ├── data/
-│   │   └── movie_dialogues.csv
-│   ├── models/
-│   │   ├── data_transformer.pth
-│   │   └── transformer.py
-│   ├── main.py
-│   ├── train.py
-│   ├── tokenizer.py
-│   ├── utils.py
-│   └── requirements.txt
-├── new-app/
-│   ├── public/
-│   ├── src/
-│   │   ├── app/
-│   │   ├── components/
-│   │   └── styles/
-│   ├── package.json
-│   └── tsconfig.json
-├── README.md
-└── LICENSE
-```
