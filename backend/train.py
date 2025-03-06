@@ -2,38 +2,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import math
-import json
-from sentence_transformers import SentenceTransformer
-from sklearn.neighbors import NearestNeighbors
-import numpy as np
-import pandas as pd
+from dataset import load_movie_dialogs
 
-from dataset import battles, deaths
-
-def load_got_data():
-    text = []
-    
-    for _, battle in battles.iterrows():
-        battle_text = f"In the {battle['name']}, {battle['attacker_1']} attacked {battle['defender_1']}. "
-        if pd.notna(battle['location']):
-            battle_text += f"The battle took place at {battle['location']}. "
-        if pd.notna(battle['attacker_outcome']):
-            battle_text += f"The outcome was {battle['attacker_outcome']}. "
-        text.append(battle_text.lower())
-    
-    # Add character deaths
-    for _, death in deaths.iterrows():
-        death_text = f"{death['Name']} died in {death['Death Year']} "
-        if pd.notna(death['Book of Death']):
-            death_text += f"in book {death['Book of Death']} "
-        if pd.notna(death['Death Chapter']):
-            death_text += f"during chapter {death['Death Chapter']} "
-        text.append(death_text.lower())
-    
-    return " ".join(text)
-
-# Charger et préparer les données
-text = load_got_data()
+text = load_movie_dialogs()
 words = text.split()
 vocab = sorted(list(set(words)))
 vocab.append("<UNK>")
@@ -41,7 +12,7 @@ word_to_idx = {word: i for i, word in enumerate(vocab)}
 idx_to_word = {i: word for i, word in enumerate(vocab)}
 vocab_size = len(vocab)
 
-class GoTDataset(Dataset):
+class MovieDialogDataset(Dataset):
     def __init__(self, words, sequence_length=32):
         self.words = words
         self.sequence_length = sequence_length
@@ -51,7 +22,7 @@ class GoTDataset(Dataset):
         return self.total_len
 
     def __getitem__(self, idx):
-        chunk = self.words[idx : idx + self.sequence_length + 1]
+        chunk = self.words[idx:idx + self.sequence_length + 1]
         x = torch.tensor([word_to_idx.get(w, word_to_idx["<UNK>"]) for w in chunk[:-1]], dtype=torch.long)
         y = torch.tensor([word_to_idx.get(w, word_to_idx["<UNK>"]) for w in chunk[1:]], dtype=torch.long)
         return x, y
@@ -113,22 +84,19 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
     return total_loss / len(dataloader)
 
 if __name__ == "__main__":
-    # Paramètres d'entraînement
     d_model = 256
     nhead = 8
     num_layers = 4
-    batch_size = 128
-    num_epochs = 100
+    batch_size = 64
+    num_epochs = 5
     sequence_length = 32
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Créer dataset et dataloader
-    dataset = GoTDataset(words, sequence_length)
+    dataset = MovieDialogDataset(words, sequence_length)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    # Initialiser ou charger le modèle
     model = TransformerLanguageModel(
         vocab_size=vocab_size,
         d_model=d_model,
@@ -136,14 +104,12 @@ if __name__ == "__main__":
         num_layers=num_layers
     ).to(device)
 
-    # Essayer de charger un modèle existant
     try:
-        model.load_state_dict(torch.load("got_transformer.pth"))
+        model.load_state_dict(torch.load("data_transformer.pth")['model_state_dict'])
         print("Loaded existing model successfully!")
     except FileNotFoundError:
         print("No existing model found, starting from scratch.")
 
-    # Optimizer et criterion
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.01)
     criterion = nn.CrossEntropyLoss()
 
@@ -153,23 +119,21 @@ if __name__ == "__main__":
     print(f"Batches per epoch: {len(dataloader)}")
     print("=" * 50)
 
-    # Boucle d'entraînement
     for epoch in range(num_epochs):
         print(f"\nStarting epoch {epoch + 1}/{num_epochs}")
         avg_loss = train_epoch(model, dataloader, criterion, optimizer, device)
         print(f"Epoch {epoch + 1} completed, Average Loss: {avg_loss:.4f}")
 
-        # Sauvegarder le modèle après chaque époque
-        torch.save(model.state_dict(), "got_transformer.pth")
-        print("Model saved!")
-
-    # Sauvegarder le vocabulaire
-    print("\nSaving vocabulary...")
-    vocab_data = {
-        'word_to_idx': word_to_idx,
-        'idx_to_word': idx_to_word
-    }
-    with open('vocab.json', 'w') as f:
-        json.dump(vocab_data, f)
+        print("Saving model and vocabulary...")
+        checkpoint = {
+            'model_state_dict': model.state_dict(),
+            'vocab_data': {
+                'word_to_idx': word_to_idx,
+                'idx_to_word': idx_to_word,
+                'vocab_size': vocab_size
+            }
+        }
+        torch.save(checkpoint, "data_transformer.pth")
+        print("Model and vocabulary saved!")
 
     print("Training completed!")

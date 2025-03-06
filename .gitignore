@@ -1,0 +1,43 @@
+# Python
+backend/__pycache__/
+backend/*.py[cod]
+backend/$py.class
+backend/*.so
+backend/.Python
+backend/venv/
+backend/ENV/
+.env
+*.pth
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node/Next.js
+new-app/node_modules/
+new-app/.next/
+new-app/out/
+new-app/build/
+.DS_Store
+*.pem
+.env*.local
+.vercel
+*.tsbuildinfo
+next-env.d.ts
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project specific
+backend/data_transformer.pth
+backend/shakespeare_transformer.pth
+backend/*.log
+backend/dist/
+backend/.cache/
+
+# Training data
+movie_lines.txt
+movie_conversations.txt

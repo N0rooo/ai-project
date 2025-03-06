@@ -1,0 +1,7 @@
+torch>=2.0.0
+fastapi>=0.68.0
+uvicorn>=0.15.0
+kagglehub>=0.1.0
+python-multipart>=0.0.5
+pydantic>=1.8.2
+requests>=2.31.0 

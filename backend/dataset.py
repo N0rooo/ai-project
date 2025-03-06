@@ -1,20 +1,33 @@
-import pandas as pd
-import requests
+import kagglehub
+import os
 
-def load_stories():
-    # You can use any of these sources:
-    # 1. Quotes API: https://api.quotable.io/quotes?limit=150
-    # 2. Short stories dataset from Kaggle
-    # 3. Reddit writing prompts
-    # For this example, let's use quotes
+def load_movie_dialogs(max_sequences=50000):
+    path = kagglehub.dataset_download("rajathmc/cornell-moviedialog-corpus")
     
-    response = requests.get('https://api.quotable.io/quotes?limit=150')
-    quotes = response.json()['results']
+    movie_lines_path = os.path.join(path, "movie_lines.txt")
+    movie_conversations_path = os.path.join(path, "movie_conversations.txt")
     
-    text_samples = []
-    for quote in quotes:
-        text_samples.append(quote['content'])
+    lines = {}
+    with open(movie_lines_path, 'r', encoding='iso-8859-1') as f:
+        for i, line in enumerate(f):
+            if i >= max_sequences:  
+                break
+            parts = line.strip().split(" +++$+++ ")
+            if len(parts) == 5:
+                line_id, _, _, _, text = parts
+                lines[line_id] = text.lower()
     
-    return text_samples
-
-stories = load_stories()
+    # Lire les conversations
+    conversations = []
+    with open(movie_conversations_path, 'r', encoding='iso-8859-1') as f:
+        for line in f:
+            if len(conversations) >= max_sequences:  
+                break
+            parts = line.strip().split(" +++$+++ ")
+            if len(parts) == 4:
+                line_ids = eval(parts[3])
+                conversation = [lines[line_id] for line_id in line_ids if line_id in lines]
+                conversations.extend(conversation[:max_sequences - len(conversations)])
+    
+    print(f"Loaded {len(conversations)} sequences")
+    return " ".join(conversations)

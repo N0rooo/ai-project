@@ -61,17 +61,16 @@ class GenerateRequest(BaseModel):
 
 def load_model_and_vocab():
     try:
-        checkpoint = torch.load("got_transformer.pth", map_location=torch.device('cpu'))
-        
+        checkpoint = torch.load("data_transformer.pth", map_location=torch.device('cpu'), weights_only=False)
         vocab_data = checkpoint['vocab_data']
         word_to_idx = vocab_data['word_to_idx']
         idx_to_word = vocab_data['idx_to_word']
         vocab_size = vocab_data['vocab_size']
         
         config = {
-            'd_model': 512,
+            'd_model': 256,
             'nhead': 8,
-            'num_layers': 6,
+            'num_layers': 4,
             'vocab_size': vocab_size
         }
         
@@ -82,7 +81,7 @@ def load_model_and_vocab():
             model.load_state_dict(checkpoint['model_state_dict'])
             print(f"Model and vocabulary (size: {vocab_size}) loaded successfully!")
         except RuntimeError as e:
-            print("Error loading model weights. Training new model...")
+            print("Error loading model weights:", str(e))
             raise
             
         return model, config, word_to_idx, idx_to_word
@@ -95,66 +94,130 @@ def load_model_and_vocab():
 model, MODEL_CONFIG, word_to_idx, idx_to_word = load_model_and_vocab()
 model.eval()
 
-def generate_text(model, start_text, max_length=50, temperature=0.7):
+def generate_text(model, start_text, max_length=50, temperature=0.9):
     if start_text.strip() == "":
         return ""
         
     model.eval()
-    input_text = start_text.lower()
-    
-    if "death" in input_text or "died" in input_text:
-        name = input_text.replace("death", "").replace("died", "").strip()
-        words = [name, "met", "their", "fate"]
-    else:
-        words = input_text.split()
-    
+    # Clean input text
+    cleaned_text = start_text.lower().replace('"', '').strip()
+    words = [w for w in cleaned_text.split() if w.strip()]
+    initial_prompt_words = set(words)
     device = next(model.parameters()).device
     
+    # Tracking structures
+    word_frequencies = {word: 1 for word in words}
+    recent_words = set()  # Track recent words for local repetition
+    banned_words = set()  # Words that shouldn't appear again
+    
+    # Sentence control
     end_tokens = [".", "?", "!"]
     sentence_count = 0
-    max_sentences = 3 
+    max_sentences = 2
+    min_words_per_sentence = 5
+    max_words_per_sentence = 10
+    current_sentence_words = len(words)
+    
+    # Common words that should connect ideas
+    connectors = {"and", "but", "because", "while", "though", "however", "when", "if", "as"}
+    pronouns = {"he", "she", "they", "it", "we", "you", "i"}
     
     with torch.inference_mode():
-        for _ in range(max_length):
-            context_window = words[-64:] if len(words) > 64 else words
+        while len(words) < max_length:
+            # Use limited context
+            context_window = words[-8:] if len(words) > 8 else words
             
             input_indices = [word_to_idx.get(w, word_to_idx["<UNK>"]) for w in context_window]
             input_seq = torch.tensor(input_indices, dtype=torch.long).unsqueeze(0).to(device)
 
             output = model(input_seq)
             logits = output[0, -1, :] / temperature
-
-            k = min(20, int(len(word_to_idx) * 0.2))
+            
+            # Sample from top-k
+            k = min(50, len(word_to_idx))
             top_k_probs, top_k_indices = torch.topk(logits, k)
             probs = torch.softmax(top_k_probs, dim=0)
             
-            # Éviter les répétitions
-            if len(words) > 2:
-                last_word = words[-1]
-                last_2_words = words[-2:]
+            valid_words = []
+            valid_probs = []
+            
+            # Filter candidates
+            for i, idx in enumerate(top_k_indices):
+                word = idx_to_word[idx.item()]
                 
-                # Pénaliser les mots récemment utilisés
-                for i, idx in enumerate(top_k_indices):
-                    word = idx_to_word[idx.item()]
-                    if word == last_word:
-                        probs[i] *= 0.05  # Pénalité plus forte pour les répétitions
-                    elif word in last_2_words:
-                        probs[i] *= 0.2
-            
-            next_word_idx = top_k_indices[torch.multinomial(probs, 1)].item()
-            next_word = idx_to_word[next_word_idx]
-            
-            # Éviter les répétitions de phrases
-            if next_word in end_tokens:
-                sentence_count += 1
-                if sentence_count >= max_sentences:
-                    words.append(next_word)
+                # Skip if:
+                if (word in banned_words or  # Globally banned
+                    word in recent_words or  # Recently used
+                    word in word_frequencies and word_frequencies[word] >= 2 or  # Used twice
+                    (len(words) > 0 and word == words[-1]) or  # Immediate repetition
+                    (word in initial_prompt_words and len(words) < 8)):  # Too soon to repeat prompt
+                    continue
+                
+                # Boost probability for connectors at appropriate positions
+                boost = 1.0
+                if current_sentence_words > 3 and word in connectors:
+                    boost = 1.2
+                if len(words) > 0 and words[-1] in end_tokens and word in pronouns:
+                    boost = 1.3
+                
+                valid_words.append(word)
+                valid_probs.append(probs[i].item() * boost)
+                
+                if len(valid_words) >= 20:  # Limit candidates
                     break
             
+            # Handle no valid words
+            if not valid_words:
+                if current_sentence_words >= min_words_per_sentence:
+                    words.append(".")
+                    sentence_count += 1
+                    if sentence_count >= max_sentences:
+                        break
+                    current_sentence_words = 0
+                    recent_words.clear()
+                    continue
+                else:
+                    # Reset sentence if too short
+                    words = words[:-current_sentence_words]
+                    current_sentence_words = 0
+                    recent_words.clear()
+                    continue
+            
+            # Sample next word
+            valid_probs = torch.tensor(valid_probs)
+            valid_probs = valid_probs / valid_probs.sum()
+            next_word = valid_words[torch.multinomial(valid_probs, 1).item()]
+            
+            # Update tracking
+            word_frequencies[next_word] = word_frequencies.get(next_word, 0) + 1
+            recent_words.add(next_word)
+            if len(recent_words) > 5:  # Keep track of last 5 words
+                recent_words.remove(next(iter(recent_words)))
+            
+            current_sentence_words += 1
             words.append(next_word)
+            
+            # Handle sentence endings
+            if next_word in end_tokens:
+                if current_sentence_words < min_words_per_sentence:
+                    words.pop()
+                    continue
+                sentence_count += 1
+                if sentence_count >= max_sentences:
+                    break
+                current_sentence_words = 0
+                recent_words.clear()
+            
+            # Force end if sentence too long
+            if current_sentence_words >= max_words_per_sentence:
+                words.append(".")
+                sentence_count += 1
+                if sentence_count >= max_sentences:
+                    break
+                current_sentence_words = 0
+                recent_words.clear()
 
     text = " ".join(words)
-    
     if not any(text.strip().endswith(token) for token in end_tokens):
         text += "."
         
@@ -166,12 +229,15 @@ async def generate(request: GenerateRequest):
         return {"error": "Empty prompt"}
     
     try:
-        temperature = 0.8  
+        # Dynamic temperature based on prompt
+        base_temp = 0.85
+        prompt_words = len(request.prompt.split())
+        temperature = base_temp + (0.05 * min(prompt_words, 3))
         
         generated_text = generate_text(
             model, 
             request.prompt,
-            max_length=request.max_length,
+            max_length=40,  # Shorter length for more control
             temperature=temperature
         )
         
